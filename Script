@@ -1,0 +1,355 @@
+Sub ExportEmailsToTextFiles()
+    Dim olApp As Outlook.Application
+    Dim olNamespace As Outlook.Namespace
+    Dim olMailbox As Outlook.Folder
+    Dim olFolder As Outlook.Folder
+    Dim olItem As Object
+    Dim olMail As Outlook.MailItem
+    Dim fso As Object
+    Dim txtFile As Object
+    Dim folderPath As String
+    Dim fileName As String
+    Dim dateFolder As String
+    Dim savePath As String
+    Dim i As Integer
+    Dim invalidChars As String
+    Dim startDate As Date
+    Dim endDate As Date
+    Dim userStartDate As String
+    Dim userEndDate As String
+    Dim receivedDate As Date
+    Dim useDateFilter As VbMsgBoxResult
+    Dim emailBody As String
+    
+    ' Initialize Outlook
+    Set olApp = Outlook.Application
+    Set olNamespace = olApp.GetNamespace("MAPI")
+    
+    ' Step 1: Let user select mailbox first
+    Set olMailbox = olNamespace.PickFolder
+    
+    ' Exit if no mailbox selected
+    If olMailbox Is Nothing Then
+        MsgBox "No mailbox selected. Exiting.", vbInformation
+        Exit Sub
+    End If
+    
+    ' Step 2: Let user select folder within the mailbox
+    MsgBox "Now select the specific folder you want to export from.", vbInformation
+    Set olFolder = olNamespace.PickFolder
+    
+    ' Exit if no folder selected
+    If olFolder Is Nothing Then
+        MsgBox "No folder selected. Exiting.", vbInformation
+        Exit Sub
+    End If
+    
+    ' Step 3: Ask if user wants to filter by date range
+    useDateFilter = MsgBox("Do you want to filter emails by date range?" & vbCrLf & vbCrLf & _
+                          "Click YES to specify a date range" & vbCrLf & _
+                          "Click NO to export all emails", vbYesNo + vbQuestion, "Date Filter")
+    
+    If useDateFilter = vbYes Then
+        ' Get start date
+        Do
+            userStartDate = InputBox("Enter START date:" & vbCrLf & vbCrLf & _
+                                    "Accepted formats:" & vbCrLf & _
+                                    "  DD/MM/YYYY  (e.g., 15/01/2024)" & vbCrLf & _
+                                    "  DD-MM-YYYY  (e.g., 15-01-2024)" & vbCrLf & _
+                                    "  YYYY/MM/DD  (e.g., 2024/01/15)" & vbCrLf & _
+                                    "  YYYY-MM-DD  (e.g., 2024-01-15)", "Start Date")
+            
+            ' Exit if user cancels
+            If userStartDate = "" Then
+                MsgBox "Date range selection cancelled. Exiting.", vbInformation
+                Exit Sub
+            End If
+            
+            ' Try to parse the date
+            startDate = ParseDate(userStartDate)
+            
+            If startDate <> 0 Then
+                startDate = DateValue(startDate) ' Remove time component, set to start of day
+                Exit Do
+            Else
+                MsgBox "Invalid date format. Please try again.", vbExclamation
+            End If
+        Loop
+        
+        ' Get end date
+        Do
+            userEndDate = InputBox("Enter END date:" & vbCrLf & vbCrLf & _
+                                  "Accepted formats:" & vbCrLf & _
+                                  "  DD/MM/YYYY  (e.g., 31/03/2024)" & vbCrLf & _
+                                  "  DD-MM-YYYY  (e.g., 31-03-2024)" & vbCrLf & _
+                                  "  YYYY/MM/DD  (e.g., 2024/03/31)" & vbCrLf & _
+                                  "  YYYY-MM-DD  (e.g., 2024-03-31)", "End Date")
+            
+            ' Exit if user cancels
+            If userEndDate = "" Then
+                MsgBox "Date range selection cancelled. Exiting.", vbInformation
+                Exit Sub
+            End If
+            
+            ' Try to parse the date
+            endDate = ParseDate(userEndDate)
+            
+            If endDate <> 0 Then
+                endDate = DateValue(endDate) + 1 - 0.00001 ' Set to end of day (23:59:59)
+                Exit Do
+            Else
+                MsgBox "Invalid date format. Please try again.", vbExclamation
+            End If
+        Loop
+        
+        ' Validate date range
+        If startDate > endDate Then
+            MsgBox "Start date cannot be after end date. Exiting.", vbExclamation
+            Exit Sub
+        End If
+    End If
+    
+    ' Step 4: Let user select save location
+    savePath = SelectFolder("Select location to save exported emails:")
+    
+    ' Exit if no save location selected
+    If savePath = "" Then
+        MsgBox "No save location selected. Exiting.", vbInformation
+        Exit Sub
+    End If
+    
+    ' Create folder name based on today's date
+    dateFolder = Format(Date, "yyyy-mm-dd")
+    folderPath = savePath & "\" & dateFolder
+    
+    ' Create file system object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    
+    ' Create folder if it doesn't exist
+    If Not fso.FolderExists(folderPath) Then
+        fso.CreateFolder folderPath
+    End If
+    
+    ' Characters that are invalid in file names
+    invalidChars = "\/:*?""<>|"
+    
+    ' Counter for progress
+    i = 0
+    
+    ' Loop through all items in folder
+    For Each olItem In olFolder.Items
+        ' Check if item is a mail item
+        If TypeOf olItem Is Outlook.MailItem Then
+            Set olMail = olItem
+            
+            ' Check date filter if enabled
+            If useDateFilter = vbYes Then
+                receivedDate = olMail.ReceivedTime
+                
+                ' Skip email if outside date range
+                If receivedDate < startDate Or receivedDate > endDate Then
+                    GoTo NextItem
+                End If
+            End If
+            
+            i = i + 1
+            
+            ' Create safe file name from subject
+            fileName = olMail.Subject
+            If Len(fileName) = 0 Then
+                fileName = "No_Subject"
+            End If
+            
+            ' Remove invalid characters from filename
+            Dim j As Integer
+            For j = 1 To Len(invalidChars)
+                fileName = Replace(fileName, Mid(invalidChars, j, 1), "_")
+            Next j
+            
+            ' Limit filename length to avoid path too long error
+            If Len(fileName) > 100 Then
+                fileName = Left(fileName, 100)
+            End If
+            
+            ' Add timestamp to ensure unique filenames
+            fileName = fileName & "_" & Format(olMail.ReceivedTime, "yyyymmdd_hhnnss") & ".txt"
+            
+            ' Get email body and remove URLs in angle brackets
+            emailBody = olMail.Body
+            emailBody = RemoveAngleBracketURLs(emailBody)
+            
+            ' Create and write to text file
+            Set txtFile = fso.CreateTextFile(folderPath & "\" & fileName, True, True)
+            
+            ' Write email details to text file
+            txtFile.WriteLine "From: " & olMail.SenderName & " <" & olMail.SenderEmailAddress & ">"
+            txtFile.WriteLine "To: " & olMail.To
+            If Len(olMail.CC) > 0 Then
+                txtFile.WriteLine "CC: " & olMail.CC
+            End If
+            txtFile.WriteLine "Subject: " & olMail.Subject
+            txtFile.WriteLine "Date: " & olMail.ReceivedTime
+            txtFile.WriteLine "----------------------------------------"
+            txtFile.WriteLine ""
+            txtFile.WriteLine emailBody
+            
+            txtFile.Close
+            Set txtFile = Nothing
+        End If
+        
+NextItem:
+    Next olItem
+    
+    ' Show completion message
+    If useDateFilter = vbYes Then
+        MsgBox "Exported " & i & " email(s) from " & Format(startDate, "DD/MM/YYYY") & _
+               " to " & Format(endDate, "DD/MM/YYYY") & " to:" & vbCrLf & folderPath, _
+               vbInformation, "Export Complete"
+    Else
+        MsgBox "Exported " & i & " email(s) to:" & vbCrLf & folderPath, vbInformation, "Export Complete"
+    End If
+    
+    ' Open the folder
+    CreateObject("WScript.Shell").Run "explorer.exe " & folderPath
+    
+    ' Clean up
+    Set olMail = Nothing
+    Set olFolder = Nothing
+    Set olMailbox = Nothing
+    Set olNamespace = Nothing
+    Set olApp = Nothing
+    Set fso = Nothing
+End Sub
+
+' Function to remove URLs within angle brackets
+Function RemoveAngleBracketURLs(text As String) As String
+    Dim result As String
+    Dim pos As Long
+    Dim startPos As Long
+    Dim endPos As Long
+    
+    result = text
+    
+    ' Loop to find and remove all instances of <...>
+    Do
+        startPos = InStr(result, "<")
+        If startPos = 0 Then Exit Do
+        
+        endPos = InStr(startPos, result, ">")
+        If endPos = 0 Then Exit Do
+        
+        ' Check if content between brackets looks like a URL
+        Dim bracketContent As String
+        bracketContent = Mid(result, startPos + 1, endPos - startPos - 1)
+        
+        ' Remove if it contains common URL indicators
+        If InStr(1, bracketContent, "http://", vbTextCompare) > 0 Or _
+           InStr(1, bracketContent, "https://", vbTextCompare) > 0 Or _
+           InStr(1, bracketContent, "www.", vbTextCompare) > 0 Or _
+           InStr(1, bracketContent, ".com", vbTextCompare) > 0 Or _
+           InStr(1, bracketContent, ".org", vbTextCompare) > 0 Or _
+           InStr(1, bracketContent, ".net", vbTextCompare) > 0 Then
+            
+            ' Remove the entire <URL> including brackets
+            result = Left(result, startPos - 1) & Mid(result, endPos + 1)
+        Else
+            ' Not a URL, skip past this bracket
+            pos = endPos + 1
+            If pos > Len(result) Then Exit Do
+            result = Left(result, startPos - 1) & Mid(result, pos)
+        End If
+    Loop
+    
+    RemoveAngleBracketURLs = result
+End Function
+
+' Function to parse date from various formats
+Function ParseDate(dateString As String) As Date
+    Dim parts() As String
+    Dim separator As String
+    Dim day As Integer, month As Integer, year As Integer
+    
+    On Error GoTo ParseError
+    
+    ' Remove any spaces
+    dateString = Trim(dateString)
+    
+    ' Determine separator
+    If InStr(dateString, "/") > 0 Then
+        separator = "/"
+    ElseIf InStr(dateString, "-") > 0 Then
+        separator = "-"
+    Else
+        ' Try default date parsing
+        If IsDate(dateString) Then
+            ParseDate = CDate(dateString)
+            Exit Function
+        Else
+            ParseDate = 0
+            Exit Function
+        End If
+    End If
+    
+    ' Split the date string
+    parts = Split(dateString, separator)
+    
+    ' Need exactly 3 parts
+    If UBound(parts) <> 2 Then
+        ParseDate = 0
+        Exit Function
+    End If
+    
+    ' Determine format based on first part length and value
+    If Len(parts(0)) = 4 Then
+        ' Format: YYYY/MM/DD or YYYY-MM-DD
+        year = CInt(parts(0))
+        month = CInt(parts(1))
+        day = CInt(parts(2))
+    Else
+        ' Format: DD/MM/YYYY or DD-MM-YYYY
+        day = CInt(parts(0))
+        month = CInt(parts(1))
+        year = CInt(parts(2))
+    End If
+    
+    ' Validate date components
+    If year < 1900 Or year > 2100 Then
+        ParseDate = 0
+        Exit Function
+    End If
+    
+    If month < 1 Or month > 12 Then
+        ParseDate = 0
+        Exit Function
+    End If
+    
+    If day < 1 Or day > 31 Then
+        ParseDate = 0
+        Exit Function
+    End If
+    
+    ' Create the date
+    ParseDate = DateSerial(year, month, day)
+    Exit Function
+    
+ParseError:
+    ParseDate = 0
+End Function
+
+' Function to select a folder using Windows folder browser dialog
+Function SelectFolder(promptText As String) As String
+    Dim shell As Object
+    Dim folder As Object
+    
+    Set shell = CreateObject("Shell.Application")
+    Set folder = shell.BrowseForFolder(0, promptText, 0, 0)
+    
+    If Not folder Is Nothing Then
+        SelectFolder = folder.Self.Path
+    Else
+        SelectFolder = ""
+    End If
+    
+    Set folder = Nothing
+    Set shell = Nothing
+End Function
